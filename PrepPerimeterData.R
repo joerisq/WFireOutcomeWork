@@ -29,6 +29,7 @@ library(velox)
 library(parallel)
 library(data.table)
 library(geojsonio)
+library(cleangeo)
 
 ##################################################################################################################
 ## Section: Set global parameters
@@ -131,8 +132,11 @@ mtbs.us.ml.only <- subset(mtbs_shp, !(STATE %in% c('AK', 'HI', 'PR')))
 #plot(mtbs.us.ml.only)
 
 # Test for uniqueness of fire ids - Distinct event perimiters are unique uni.mtbs.evnts = nrow(mtbs.us.ml.only.DT)
-mtbs.us.ml.only.DT <- setDT(mtbs.us.ml.only@data)
+mtbs.us.ml.only.DT <- as.data.table(mtbs.us.ml.only@data)
 uni.mtbs.evnts <- unique(mtbs.us.ml.only.DT, by = c('Fire_ID')) 
+
+# Save current output
+writeOGR(obj=mtbs.us.ml.only, dsn=final_path, layer='mtbs_perims_DD_Clnd', driver="ESRI Shapefile", overwrite=TRUE)
 
 ###################################### MTBS DATA LOAD ###################################### 
 
@@ -178,10 +182,13 @@ non.us.stsl <- setdiff(unlist(uniq.stsl.df),state.abb)
 
 # Require to remove just Alazka, Hawaii and Puerto Rico - AK, HI & PR
 GEOMgd.only <- subset(GEOMgd, !(state %in% c('AK', 'HI')))
-#plot(GEOMgd.only)
+levels(droplevels(GEOMgd.only$state))
+
+# Save current output
+writeOGR(obj=GEOMgd.only, dsn=final_path, layer='wfirepmtrs2018-2019', driver="ESRI Shapefile", overwrite=TRUE)
 
 # Test for uniqueness of fire ids - Distinct event perimiters are not unique uni.GEO.evnts < nrow(GEOMgd.only.DT)
-GEOMgd.only.DT <- setDT(GEOMgd.only@data)
+GEOMgd.only.DT <- as.data.table(GEOMgd.only@data)
 
 setorder(GEOMgd.only.DT, uniquefire, latest)
 GEOMgd.only.DT[ , `:=`( COUNT = .N , IDX = 1:.N ) , by = c('uniquefire') ]
@@ -190,11 +197,15 @@ uni.GEO.evnts <- unique(GEOMgd.only.DT, by = c('uniquefire'))
 uni.y.ltst <- GEOMgd.only.DT[latest == 'Y']
 uni.y.ltst.ts <- unique(uni.y.ltst, by = c('uniquefire')) 
 
-# Appears selecting latest = Y, provides most unique result, 6 firse are dropped. 
-GEOMgd.fnl01 <- subset(GEOMgd.only, (latest %in% c('Y')))
+# Appears selecting latest = Y, provides most unique result, 6 fires are dropped. 
+GEOMgd.fnl01 <- GEOMgd.only[GEOMgd.only$latest == 'Y',]
+levels(droplevels(GEOMgd.fnl01$latest))
 
 # Reproject data to match projection of MTBS data
 GEOMgd.fnl.rpj <- spTransform(GEOMgd.fnl01,crs(mtbs.us.ml.only))
+
+# Save current output
+writeOGR(obj=GEOMgd.fnl.rpj, dsn=final_path, layer='wfirepmtrs2018-2019_LatestPmters2', driver="ESRI Shapefile", overwrite=TRUE)
 
 ###################################### GEOMACS DATA LOAD ###################################
 
@@ -232,7 +243,7 @@ GEOMgd.fnl <- GEOMgd.fnl.rpj[,(names(GEOMgd.fnl.rpj) %in% keepcs)]
 
 # Append MTBS and GEOMACS data
 wfirepmtrs <- rbind(mtbs.fnl, GEOMgd.fnl, makeUniqueIDs = TRUE)  
-plot(wfirepmtrs)
+#plot(wfirepmtrs)
 
 # Set output directory
 final_path <- file.path(paste0('./',OUTPUT_DIR))
@@ -296,7 +307,7 @@ WUI.msk <- raster::raster(paste0(final_path,'/','WFUrbanMask_DD.tif'))
 # Re-read, clean and write updated file as geojson
 wfirepmtrs.DD <- readOGR(paste0(final_path,'/','fltrdwfirepmtrs1984-2019.shp')) 
 wfirepmtrs.DD@data$idin <- attr(wfirepmtrs.DD@data, 'row.names') # Returns integers
-plot(wfirepmtrs.DD)
+#plot(wfirepmtrs.DD)
 
 # Overlay wildfire perimeters with urban mask - most efficient way, count pixels per perimeter and drop 
 # perimeters with few pixels
@@ -328,13 +339,31 @@ wfirepmtrs.DD.fltdrd <- subset(wfirepmtrs.DD, (idin %in% polylst))
 #plot(wfirepmtrs.DD.fltdrd)
 #plot.new()
 
+# Read attributes
+wfirepmtrs.DD.fltdrd.df <- as.data.frame(wfirepmtrs.DD.fltdrd@data)
+
 # Ensure poorly formed polygons are fixed
-wfirepmtrs.DD.fltdrd <- spTransform(wfirepmtrs.DD.fltdrd,crs(laea_proj4))
+wfirepmtrs.DD.fltdrd.smpl <- gSimplify(wfirepmtrs.DD.fltdrd, tol = 0.00001, topologyPreserve=TRUE)
+
+# Create a spatial polygon data frame 
+wfirepmtrs.smpl <- SpatialPolygonsDataFrame(wfirepmtrs.DD.fltdrd.smpl, wfirepmtrs.DD.fltdrd.df)
+
+# Ensure complete polygons
+wfirepmtrs.DD.fltdrd <- spTransform(wfirepmtrs.smpl,crs(laea_proj4))
 wfirepmtrs.DD.fltdrd <- gBuffer(wfirepmtrs.DD.fltdrd, byid=TRUE, width=0)
 wfirepmtrs.DD.fltdrd <- spTransform(wfirepmtrs.DD.fltdrd,CRS('+init=epsg:4326'))
 
 # Test for bad polygons
 sum(gIsValid(wfirepmtrs.DD.fltdrd, byid=TRUE)==FALSE)
+
+# Miscellaneous testing
+#testout <- st_as_sfc(wfirepmtrs.DD.fltdrd)
+#testout <- lwgeom::st_make_valid(testout)
+#testout.vd <- st_is_valid(testout)
+#which(testout.vd == FALSE, arr.ind = TRUE)
+#sp.clean <- clgeo_Clean(wfirepmtrs.DD.fltdrd) 
+#report.clean <- clgeo_CollectionReport(sp.clean) 
+#clgeo_SummaryReport(report.clean) 
 
 # Save current output
 writeOGR(obj=wfirepmtrs.DD.fltdrd, dsn=final_path, layer='final_wfirepmtrs1984-2019', driver="ESRI Shapefile", overwrite=TRUE)
@@ -342,7 +371,40 @@ writeOGR(obj=wfirepmtrs.DD.fltdrd, dsn=final_path, layer='final_wfirepmtrs1984-2
 # Output geojson final files post validate and fix
 geojson_write(wfirepmtrs.DD.fltdrd, lat = NULL, lon = NULL, geometry = 'polygon',
               group = NULL, file = paste0(final_path,'/','finalwfirepmtrs1984-2019_clnd.geojson'), overwrite = TRUE,
-              precision = NULL, convert_wgs84 = FALSE, crs = CRS('+init=epsg:4326'))
+              precision = 6, convert_wgs84 = FALSE, crs = CRS('+init=epsg:4326'))
+
+##################################################################################################################
+## Section: Read accumulated exposures data aggregated through BQuery for each polygon
+##################################################################################################################
+
+# Read exposures data
+final_path <- file.path(paste0('./',DATA_DIR))
+expofile <- paste0(final_path,'/','wildfire-perimeter-totals.csv')
+expo.DT <- read.csv(expofile)
+setDT(expo.DT)
+
+# Drop obsolete columns
+expo.DT[ ,`:=`(boi_type = NULL ,radius = NULL, mode = NULL)] 
+
+# Re-read wild fire perimeters file exposures aggregations were based on
+final_path <- file.path(paste0('./',OUTPUT_DIR))
+wfirepmtrs_shp <- readOGR(paste0(final_path,'/','final_wfirepmtrs1984-2019.shp')) 
+wfirepmtrs_shp <- spTransform(wfirepmtrs_shp, CRS('+init=epsg:4326'))
+
+# Get attribute data from boundary file
+wfirepmtrs_shp.DT <- wfirepmtrs_shp@data
+setDT(wfirepmtrs_shp.DT)
+
+# Merge exposures data with wildfire perimeter attributes
+setkey(wfirepmtrs_shp.DT, Fire_ID)
+setkey(expo.DT, boi_source_link_id)
+expo.DT <- merge(expo.DT, wfirepmtrs_shp.DT, by.x='boi_source_link_id', by.y='Fire_ID', all = FALSE)
+
+# Drop obsolete columns
+expo.DT[ ,`:=`(Fire_Type = NULL)] 
+
+# Test data Extract Camp fire
+expo.DT[Fire_Name == 'PARADISE']
 
 ##################################################################################################################
 ## Section: Define miscellaneous functions
