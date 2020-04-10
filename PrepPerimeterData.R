@@ -157,17 +157,21 @@ GEO19_shp <- spTransform(GEO19_shp, CRS('+init=epsg:4269'))
 #plot(GEO18_shp)
 #plot(GEO19_shp, add = TRUE)
 
+# Drop fires from ecah year not in current year
+GEO18_shp.Tru18 <- GEO18_shp[GEO18_shp$fireyear == 2018,]
+GEO19_shp.Tru19 <- GEO19_shp[GEO19_shp$fireyear == 2019,]
+
 # Examine difference in fireld names
-difs <- setdiff(names(GEO18_shp@data),names(GEO19_shp@data))
-difs2 <- setdiff(names(GEO19_shp@data),names(GEO18_shp@data))
+difs <- setdiff(names(GEO18_shp.Tru18@data),names(GEO19_shp.Tru19@data))
+difs2 <- setdiff(names(GEO19_shp.Tru19@data),names(GEO18_shp.Tru18@data))
 
 # Rename fields
-names(GEO18_shp@data)[names(GEO18_shp@data)=='temp'] <- 'objectid'
-names(GEO19_shp@data)[names(GEO19_shp@data)=='st_area_sh'] <- 'shape_Area'
-names(GEO19_shp@data)[names(GEO19_shp@data)=='st_length_'] <- 'shape_Leng'
+names(GEO18_shp.Tru18@data)[names(GEO18_shp.Tru18@data)=='temp'] <- 'objectid'
+names(GEO19_shp.Tru19@data)[names(GEO19_shp.Tru19@data)=='st_area_sh'] <- 'shape_Area'
+names(GEO19_shp.Tru19@data)[names(GEO19_shp.Tru19@data)=='st_length_'] <- 'shape_Leng'
 
-# Append 2018 ith2019 data
-GEOMgd <- rbind(GEO18_shp, GEO19_shp, makeUniqueIDs = TRUE)  
+# Append 2018 with 2019 data
+GEOMgd <- rbind(GEO18_shp.Tru18, GEO19_shp.Tru19, makeUniqueIDs = TRUE)  
 #plot(GEOMgd)
 
 # Add row ID to attributes
@@ -205,7 +209,7 @@ levels(droplevels(GEOMgd.fnl01$latest))
 GEOMgd.fnl.rpj <- spTransform(GEOMgd.fnl01,crs(mtbs.us.ml.only))
 
 # Save current output
-writeOGR(obj=GEOMgd.fnl.rpj, dsn=final_path, layer='wfirepmtrs2018-2019_LatestPmters2', driver="ESRI Shapefile", overwrite=TRUE)
+writeOGR(obj=GEOMgd.fnl.rpj, dsn=final_path, layer='wfirepmtrs2018-2019_LatestPmters', driver="ESRI Shapefile", overwrite=TRUE)
 
 ###################################### GEOMACS DATA LOAD ###################################
 
@@ -261,8 +265,9 @@ wfirepmtrs_shp <- spTransform(wfirepmtrs_shp, CRS('+init=epsg:4326'))
 
 # Remove prescribed burns, likely most from MTBS data (Oklahoma bulls eye of fire activity, will be removed)
 wfirepmtrs_shp <- subset(wfirepmtrs_shp, !(Fire_Type %like% c('Prescribed')))
+levels(droplevels(wfirepmtrs_shp$Fire_Type))
 
-# Reproject data to enable accurate polygon area calculation - output km2 converted acres 
+# Reproject data to enable accurate polygon area calculation - output km2 converted to acres 
 wfirepmtrs.rpj <- spTransform(wfirepmtrs_shp,crs(laea_proj4))
 wfirepmtrs.rpj@data$Acres <- raster::area(wfirepmtrs.rpj)*247.11/1000000.0
 wfirepmtrs.DD <- spTransform(wfirepmtrs.rpj,CRS('+init=epsg:4326'))
@@ -272,6 +277,7 @@ wfirepmtrs.DD <- subset(wfirepmtrs.DD, Acres >= 50.0)
 
 # Filter errors on Oklahoma - obvious prescribed burns coded as unknown
 wfirepmtrs.DD <- subset(wfirepmtrs.DD, !(STATE %in% c('OK','KS') & Fire_Type %in% c('Unknown')))
+levels(droplevels(wfirepmtrs_shp$Fire_Type))
 #plot(wfirepmtrs.DD)
 
 # Save current output
@@ -309,6 +315,24 @@ wfirepmtrs.DD <- readOGR(paste0(final_path,'/','fltrdwfirepmtrs1984-2019.shp'))
 wfirepmtrs.DD@data$idin <- attr(wfirepmtrs.DD@data, 'row.names') # Returns integers
 #plot(wfirepmtrs.DD)
 
+# Save current output, overwrite existing with idin appended
+writeOGR(obj=wfirepmtrs.DD, dsn=final_path, layer='fltrdwfirepmtrs1984-2019', driver="ESRI Shapefile", overwrite=TRUE)
+# Write test file to csv for use with GIS/Excel
+testfile.DT <- as.data.table(wfirepmtrs.DD@data)
+testfile.csv <- paste0(final_path,'/','FirePrmtrs.csv')
+fwrite(testfile.DT, testfile.csv)
+
+# Test event parameters
+# Fire_ID	Fire_Name	Year	Fire_Type	Acres	STATE	idin	MARGUEEEVNTS
+# CA3442911910020171205	THOMAS	              2017	Wildfire	281988	CA	13927	1
+# CA3293911676620031025	CEDAR	                2003	Wildfire	268367	CA	 1061	1
+# 2018-CABTU-016737	CAMP	                    2018	L6BH	    153338	CA	14676	1
+# TX3015109722520110904	BASTROPCOUNTYCOMPLEX	2011	Wildfire	 31839	TX	11462	1
+# CO3888410493320120623	WALDO CANYON	        2012	Wildfire	 20113	CO	 2674	1
+# TN3563108347820161123	CHIMNEY TOPS 2	      2016	Wildfire	 14999	TN	11157	1
+# AZ3328610958720130607	FOURMILE	            2013	Wildfire	 12961	AZ	  533	1
+# CO4005110538520100906	FOURMILE CANYON	      2010	Wildfire	  5865	CO	 2723	1
+
 # Overlay wildfire perimeters with urban mask - most efficient way, count pixels per perimeter and drop 
 # perimeters with few pixels
 ras.vx <- velox(WUI.msk)
@@ -320,10 +344,20 @@ result <- mclapply(seq_along(1), function(x){
 result.dt <- as.data.table(Reduce(rbind, result))
 result.dt[ , `:=`( idin = 0:(.N-1) )]
 setnames(result.dt, 'V1', 'COUNT')
-polylst <- result.dt[COUNT > 0][, idin]
+
+# Loop through wfirepmtrs.DD perimeter polygons
+result.dt[, POLYidin := 0]
+for (i in 1:nrow(wfirepmtrs.DD)) {
+  # Create output directory
+  POLYidin.shp <- wfirepmtrs.DD@data[i,'idin']
+  result.dt[i, POLYidin := POLYidin.shp]
+}
+result.dt[,TEST := idin - POLYidin]
+test <- result.dt[TEST != 0]
+polylst <- as.vector(result.dt[COUNT > 0][, idin])
 
 # Hand test polygons if necessary
-test2 <- wfirepmtrs.DD[5,'idin']
+test2 <- wfirepmtrs.DD[wfirepmtrs.DD$idin == 14676,]
 bbin <- st_bbox(test2)
 xminbb = bbin[[1]]
 xmaxbb = bbin[[3]]
@@ -339,6 +373,18 @@ wfirepmtrs.DD.fltdrd <- subset(wfirepmtrs.DD, (idin %in% polylst))
 #plot(wfirepmtrs.DD.fltdrd)
 #plot.new()
 
+# Hand test polygons if necessary
+test2 <- wfirepmtrs.DD.fltdrd[wfirepmtrs.DD.fltdrd$idin == 14676,]
+bbin <- st_bbox(test2)
+xminbb = bbin[[1]]
+xmaxbb = bbin[[3]]
+yminbb = bbin[[2]]
+ymaxbb = bbin[[4]]
+xlimin = c(xminbb, xmaxbb) 
+ylimin = c(yminbb, ymaxbb) 
+plot(WUI.msk, xlim = xlimin, ylim = ylimin)
+plot(test2, add = TRUE)
+
 # Read attributes
 wfirepmtrs.DD.fltdrd.df <- as.data.frame(wfirepmtrs.DD.fltdrd@data)
 
@@ -349,15 +395,15 @@ wfirepmtrs.DD.fltdrd.smpl <- gSimplify(wfirepmtrs.DD.fltdrd, tol = 0.00001, topo
 wfirepmtrs.smpl <- SpatialPolygonsDataFrame(wfirepmtrs.DD.fltdrd.smpl, wfirepmtrs.DD.fltdrd.df)
 
 # Ensure complete polygons
-wfirepmtrs.DD.fltdrd <- spTransform(wfirepmtrs.smpl,crs(laea_proj4))
-wfirepmtrs.DD.fltdrd <- gBuffer(wfirepmtrs.DD.fltdrd, byid=TRUE, width=0)
-wfirepmtrs.DD.fltdrd <- spTransform(wfirepmtrs.DD.fltdrd,CRS('+init=epsg:4326'))
+wfirepmtrs.DD.fltdrd.fin <- spTransform(wfirepmtrs.smpl,crs(laea_proj4))
+wfirepmtrs.DD.fltdrd.buf <- gBuffer(wfirepmtrs.DD.fltdrd.fin, byid=TRUE, width=0)
+wfirepmtrs.DD.fltdrd.buf.out <- spTransform(wfirepmtrs.DD.fltdrd.buf,CRS('+init=epsg:4326'))
 
 # Test for bad polygons
-sum(gIsValid(wfirepmtrs.DD.fltdrd, byid=TRUE)==FALSE)
+sum(gIsValid(wfirepmtrs.DD.fltdrd.buf.out, byid=TRUE)==FALSE)
 
 # Miscellaneous testing
-#testout <- st_as_sfc(wfirepmtrs.DD.fltdrd)
+#testout <- st_as_sfc(wfirepmtrs.DD.fltdrd.buf.out)
 #testout <- lwgeom::st_make_valid(testout)
 #testout.vd <- st_is_valid(testout)
 #which(testout.vd == FALSE, arr.ind = TRUE)
@@ -365,11 +411,23 @@ sum(gIsValid(wfirepmtrs.DD.fltdrd, byid=TRUE)==FALSE)
 #report.clean <- clgeo_CollectionReport(sp.clean) 
 #clgeo_SummaryReport(report.clean) 
 
+# Hand test polygons if necessary
+test2 <- wfirepmtrs.DD.fltdrd.buf.out[wfirepmtrs.DD.fltdrd.buf.out$idin == 1061,]
+bbin <- st_bbox(test2)
+xminbb = bbin[[1]]
+xmaxbb = bbin[[3]]
+yminbb = bbin[[2]]
+ymaxbb = bbin[[4]]
+xlimin = c(xminbb, xmaxbb) 
+ylimin = c(yminbb, ymaxbb) 
+plot(WUI.msk, xlim = xlimin, ylim = ylimin)
+plot(test2, add = TRUE)
+
 # Save current output
-writeOGR(obj=wfirepmtrs.DD.fltdrd, dsn=final_path, layer='final_wfirepmtrs1984-2019', driver="ESRI Shapefile", overwrite=TRUE)
+writeOGR(obj=wfirepmtrs.DD.fltdrd.buf.out, dsn=final_path, layer='final_wfirepmtrs1984-2019', driver="ESRI Shapefile", overwrite=TRUE)
 
 # Output geojson final files post validate and fix
-geojson_write(wfirepmtrs.DD.fltdrd, lat = NULL, lon = NULL, geometry = 'polygon',
+geojson_write(wfirepmtrs.DD.fltdrd.buf.out, lat = NULL, lon = NULL, geometry = 'polygon',
               group = NULL, file = paste0(final_path,'/','finalwfirepmtrs1984-2019_clnd.geojson'), overwrite = TRUE,
               precision = 6, convert_wgs84 = FALSE, crs = CRS('+init=epsg:4326'))
 
