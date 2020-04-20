@@ -332,6 +332,7 @@ fwrite(testfile.DT, testfile.csv)
 # TN3563108347820161123	CHIMNEY TOPS 2	      2016	Wildfire	 14999	TN	11157	1
 # AZ3328610958720130607	FOURMILE	            2013	Wildfire	 12961	AZ	  533	1
 # CO4005110538520100906	FOURMILE CANYON	      2010	Wildfire	  5865	CO	 2723	1
+# CA3859812261820171009 TUBBS                 2017  Wildfire	 36976	CA	13964	1
 
 # Overlay wildfire perimeters with urban mask - most efficient way, count pixels per perimeter and drop 
 # perimeters with few pixels
@@ -412,7 +413,7 @@ sum(gIsValid(wfirepmtrs.DD.fltdrd.buf.out, byid=TRUE)==FALSE)
 #clgeo_SummaryReport(report.clean) 
 
 # Hand test polygons if necessary
-test2 <- wfirepmtrs.DD.fltdrd.buf.out[wfirepmtrs.DD.fltdrd.buf.out$idin == 1061,]
+test2 <- wfirepmtrs.DD.fltdrd.buf.out[wfirepmtrs.DD.fltdrd.buf.out$idin == 13927,]
 bbin <- st_bbox(test2)
 xminbb = bbin[[1]]
 xmaxbb = bbin[[3]]
@@ -432,17 +433,22 @@ geojson_write(wfirepmtrs.DD.fltdrd.buf.out, lat = NULL, lon = NULL, geometry = '
               precision = 6, convert_wgs84 = FALSE, crs = CRS('+init=epsg:4326'))
 
 ##################################################################################################################
-## Section: Read accumulated exposures data aggregated through BQuery for each polygon
+## Section: Read accumulated exposures data aggregated through BQuery for each polygon and clean
 ##################################################################################################################
 
-# Read exposures data
+# Read exposures data aggregated by perimeter and 100 m grid cell
+setNumericRounding(2)
+getNumericRounding()
 final_path <- file.path(paste0('./',DATA_DIR))
-expofile <- paste0(final_path,'/','wildfire-perimeter-totals.csv')
-expo.DT <- read.csv(expofile)
-setDT(expo.DT)
+expofile <- paste0(final_path,'/','fire_perimeter_cells_total_20200408_unscaled.rds')
+expo.DT <- readRDS(expofile)
+setDT(expo.DT) # 13702757
 
-# Drop obsolete columns
-expo.DT[ ,`:=`(boi_type = NULL ,radius = NULL, mode = NULL)] 
+#expo.DT <- expo.DT[fire_id == 'CA3859812261820171009']
+
+# Export Thomas fire for testing
+#testfile.csv <- paste0(final_path,'/','TUBBS2017_FirePrmtrs.csv')
+#fwrite(expo.DT, testfile.csv)
 
 # Re-read wild fire perimeters file exposures aggregations were based on
 final_path <- file.path(paste0('./',OUTPUT_DIR))
@@ -450,19 +456,377 @@ wfirepmtrs_shp <- readOGR(paste0(final_path,'/','final_wfirepmtrs1984-2019.shp')
 wfirepmtrs_shp <- spTransform(wfirepmtrs_shp, CRS('+init=epsg:4326'))
 
 # Get attribute data from boundary file
-wfirepmtrs_shp.DT <- wfirepmtrs_shp@data
-setDT(wfirepmtrs_shp.DT)
+wfirepmtrs_shp.DT <- as.data.table(wfirepmtrs_shp@data)
 
 # Merge exposures data with wildfire perimeter attributes
 setkey(wfirepmtrs_shp.DT, Fire_ID)
-setkey(expo.DT, boi_source_link_id)
-expo.DT <- merge(expo.DT, wfirepmtrs_shp.DT, by.x='boi_source_link_id', by.y='Fire_ID', all = FALSE)
+setkey(expo.DT, fire_id)
+expo.DT <- merge(expo.DT, wfirepmtrs_shp.DT, by.x='fire_id', by.y='Fire_ID', all = FALSE)
 
 # Drop obsolete columns
-expo.DT[ ,`:=`(Fire_Type = NULL)] 
+expo.DT[ ,`:=`(Fire_Type = NULL, Year = NULL)] 
+
+# Sum exposures values
+cols <- colnames(expo.DT)
+colstosum <- cols[c(10,12)]
+expo.DT[, TOTL_SM := Reduce(`+`, .SD), .SDcol = colstosum]
+expo.DT <- expo.DT[TOTL_SM != 0] #2791234
 
 # Test data Extract Camp fire
-expo.DT[Fire_Name == 'PARADISE']
+tomas.dt <- expo.DT[fire_id == 'CA3442911910020171205']
+
+# Hand test polygons if necessary
+testfire <- wfirepmtrs_shp[wfirepmtrs_shp$Fire_ID == 'CA3442911910020171205',]
+bbin <- st_bbox(testfire)
+xminbb = bbin[[1]]
+xmaxbb = bbin[[3]]
+yminbb = bbin[[2]]
+ymaxbb = bbin[[4]]
+xlimin = c(xminbb, xmaxbb) 
+ylimin = c(yminbb, ymaxbb) 
+plot(testfire, xlim = xlimin, ylim = ylimin)
+points(tomas.dt[,X], tomas.dt[,Y], pch = 20, cex = 0.25, col = "green") 
+
+# Export Thomas fire for testing
+testfile.csv <- paste0(final_path,'/','THOMAS2018_FirePrmtrs.csv')
+fwrite(tomas.dt, testfile.csv)
+
+# Rename columns to be more succinct
+setnames(expo.DT, 'parent_cell', 'PARNT')
+setnames(expo.DT, 'cell_id', 'CELID')
+setnames(expo.DT, 'geoid_county', 'CTYFPS')
+setnames(expo.DT, 'exposure_subtype', 'CLOB')
+setnames(expo.DT, 'building_count', 'RISKS_SM')
+setnames(expo.DT, 'exposure_content_value', 'CTVAL_SM')
+setnames(expo.DT, 'square_footage', 'SQFT')
+setnames(expo.DT, 'exposure_value', 'BDVAL_SM')
+
+# Create unique cell id
+expo.DT <- expo.DT[,PARNT:= PARNT*1000000]
+expo.DT[,EXPOID:= PARNT + CELID]
+expo.DT[ ,`:=`(PARNT = NULL, CELID = NULL)]
+
+# Summarize by event parameters
+colstosum <- str_subset(names(expo.DT),'_SM')[1:4]
+colstornk.indx <- match(colstosum, unlist(names(expo.DT)))
+#colstogrp <- c('fire_id','year','CLOB','Fire_Name','STATE')
+colstogrp <- c('fire_id')
+expo.DT.evnt <- expo.DT[, lapply(.SD, sum, na.rm=TRUE), by=colstogrp, .SDcols=colstosum, drop=FALSE] 
+#setorder(expo.DT.evnt,-RISKS_SM,STATE,year)
+options(scipen=999)
+print(expo.DT.evnt, digits=4)
+#expo.DT.evnt[STATE == 'CA']
+
+# Drop events less than $500,000
+expo.DT.evnt <- expo.DT.evnt[TOTL_SM >= 500.0] 
+unievnts <- unique(expo.DT.evnt, by = 'fire_id' ) # 2527 events
+unievntstokeep <- as.list(unievnts[, .(fire_id)])
+setkey(expo.DT, fire_id)
+expo.DT <- expo.DT[unievntstokeep]
+
+# Write exposures data.table 
+final_path <- file.path(paste0('./',OUTPUT_DIR))
+expofile <- paste0(final_path,'/','fire_perimeter_cells_total_cleaned.rds')
+saveRDS(expo.DT, expofile)
+
+##################################################################################################################
+## Section: Investigate cleaned wildfire perimeter aggreagtions
+##################################################################################################################
+
+# Re-read combined input data
+final_path <- file.path(paste0('./',OUTPUT_DIR))
+expofile <- paste0(final_path,'/','fire_perimeter_cells_total_cleaned.rds')
+expo.DT <- readRDS(expofile) 
+
+# Summarize by event parameters
+colstosum <- str_subset(names(expo.DT),'_SM')[1:4]
+colstornk.indx <- match(colstosum, unlist(names(expo.DT)))
+colstogrp <- c('fire_id','year','CLOB','Fire_Name','STATE')
+expo.DT.evnt <- expo.DT[, lapply(.SD, sum, na.rm=TRUE), by=colstogrp, .SDcols=colstosum, drop=FALSE] 
+setorder(expo.DT.evnt,-RISKS_SM,STATE,year)
+options(scipen=999)
+print(expo.DT.evnt, digits=4)
+expo.DT.evnt[STATE == 'CA']
+
+# Rank annual aggregate sums by state, clob and year - CREATE AGGREGATE LOSS DATA PER YEAR
+colstornk <- str_subset(names(expo.DT.evnt),'_SM')[1:4]
+colstornk.indx <- match(colstornk, unlist(names(expo.DT.evnt)))
+colstogrp <- c('STATE','year','CLOB')
+
+# Sum totals by year
+annlsums <- expo.DT.evnt[, lapply(.SD, sum, na.rm=TRUE), by=colstogrp, .SDcols=colstornk] 
+
+# calculate the rank of annual totals by state
+colstogrp <- c('STATE','CLOB')
+annlsums[, paste0('rank_', colstornk) := lapply(.SD, frankv, ties.method = 'min', order = -1L), 
+             .SDcols = colstornk, by = colstogrp][]
+setorder(annlsums,STATE,year,CLOB)
+annlsums[STATE == 'CA'][CLOB == 'RES']
+
+# Rank events by state, clob and year - CREATE OCCURENCE LOSS DATA MAX EVENT PER YEAR
+#colstornk <- str_subset(names(expo.DT.evnt),'_SM')[1:4]
+#colstornk.indx <- match(colstornk, unlist(names(expo.DT.evnt)))
+#colstogrp <- c('STATE','year','CLOB')
+#expo.DT.evnt.rnkd <- expo.DT.evnt[, .SD[frankv(.SD, ties.method="first")[.N],], by=colstogrp, .SDcols=colstornk,  drop=FALSE]
+#setorder(expo.DT.evnt.rnkd,STATE,year)
+#options(scipen=999)
+#print(expo.DT.evnt.rnkd, digits=4)
+#expo.DT.evnt.rnkd[STATE == 'CA'][CLOB == 'RES'][year == 2003]
+
+#expo.DT.evntrnkd2 <- expo.DT.evnt[, paste0("rank_", colstornk) := lapply(.SD, frankv, ties.method = "min", order = -1L), 
+#   .SDcols = colstornk, by = colstogrp][]
+#expo.DT.evntrnkd2 <- expo.DT.evntrnkd2[STATE == 'CA'][CLOB == 'RES'][year == 2003]
+#setorder(expo.DT.evntrnkd2,STATE,year,CLOB)
+#expo.DT.evntrnkd2[, head(.SD, 1), .(STATE,year,CLOB), .SDcols=colstornk][]
+
+# Rank events by state, clob and year - CREATE OCCURENCE LOSS DATA MAX EVENT PER YEAR
+annlmaxs <- copy(expo.DT.evnt)
+colstornk <- str_subset(names(annlmaxs),'_SM')[1:4]
+colstornk.indx <- match(colstornk, unlist(names(annlmaxs)))
+colstogrp <- c('STATE','year','CLOB')
+
+# calculate the rank within each `id`
+annlmaxs[, paste0('rank_', colstornk) := lapply(.SD, frankv, ties.method = 'min', order = -1L), 
+   .SDcols = colstornk, by = colstogrp][]
+annlmaxs[STATE == 'CA'][year == 2017][Fire_Name == 'TUBBS'][CLOB == 'RES']
+
+##################################################################################################################
+## Section: Filter cells by burn scar severity
+##################################################################################################################
+
+# Set data root directory
+initial_path <- file.path(paste0('./',DATA_DIR))
+
+# Initialzie CRS from raster
+yrlybscr.msk <- raster::raster(paste0(initial_path,'/composite_data/MTBS_BSmosaics/','mtbs_CA_2017.tif'))    
+crsin <- crs(yrlybscr.msk)
+ptscrsin <- CRS('+init=epsg:4326')
+
+# Re-read combined input data
+final_path <- file.path(paste0('./',OUTPUT_DIR))
+expofile <- paste0(final_path,'/','fire_perimeter_cells_total_cleaned.rds')
+expo.DT <- readRDS(expofile) 
+
+# Get the unique list of year from th einput expsours file expofile
+uniyrs <- unique(expo.DT, by = 'year')
+yearsin <- sort(uniyrs[,year], decreasing=FALSE)
+yearsin <- yearsin[1:34]
+
+# Test events selection
+expo.DT.in <- copy(expo.DT)
+#expo.DT.in <- expo.DT.in[fire_id == 'CA3859812261820171009']
+#expo.DT.in <- expo.DT.in[RISKS_SM >=0.025]
+
+# Summarize by event parameters
+expo.DT.in.test <- expo.DT.in[fire_id == 'CA3859812261820171009']
+colstosum <- str_subset(names(expo.DT.in.test),'_SM')[1:4]
+colstornk.indx <- match(colstosum, unlist(names(expo.DT.in.test)))
+colstogrp <- c('fire_id')
+expo.DT.in.evnt <- expo.DT.in.test[, lapply(.SD, sum, na.rm=TRUE), by=colstogrp, .SDcols=colstosum, drop=FALSE] 
+options(scipen=999)
+print(expo.DT.in.evnt, digits=4)
+expo.DT.in.evnt[]
+
+# Initialize output data.table for filtered locations
+expo.DT.fltrd <- data.table(NULL)
+
+# Loop through years of exposures 
+for (iyr in 1:length(yearsin)) { # iyr <- 34
+  # Evaluate year from list
+  iyear <- as.integer(yearsin[iyr])
+  
+  for (ist in 1:length(state.abb)) { # ist <- 5
+  # Evaluate state from list
+  state <- (state.abb[ist])
+  
+  # Get data for this year
+  iyrdata.dt <- expo.DT.in[year == iyear][STATE == state]
+  iyrdata.dt[, ID := .I] # Add id column
+
+    # Select subset of pyromes
+    if (nrow(iyrdata.dt) != 0) { 
+      # prepare the 3 components: coordinates, data, and proj4string
+      coords <- iyrdata.dt[ , c('X','Y')]   # coordinates
+      data   <- iyrdata.dt[ , 1:dim(iyrdata.dt)[2]]          # data
+      crs    <- ptscrsin # proj4string of coords
+      
+      # make the spatial points data frame object
+      spdf <- SpatialPointsDataFrame(coords = coords,
+                                     data = data, 
+                                     proj4string = crs)
+      spdf_trnsfrmd = spTransform(spdf,crsin)
+      
+      bufferedPoints <- gBuffer(spdf_trnsfrmd, width=50, byid=TRUE)
+      bufferedPoints@data$idin <- attr(bufferedPoints@data, 'row.names') # Returns integers
+      
+      buffile <- paste0(final_path,'/bufferdata/','BufPts_',state,'_',iyear,'.shp') 
+      writeOGR(obj=bufferedPoints, dsn=buffile, layer='bufferedPoints', driver='ESRI Shapefile')      
+      
+      # Read burn scar raster for this year
+      rasfile <- paste0(initial_path,'/composite_data/MTBS_BSmosaics/','mtbs_',state,'_',iyear,'.tif')  
+      
+      if (file.exists(rasfile)) {
+        # Read burn scar raster for this year
+        yrlybscr.msk <- raster::raster(paste0(initial_path,'/composite_data/MTBS_BSmosaics/','mtbs_',state,'_',iyear,'.tif'))  
+        yrlybscr.msk.CPY <- yrlybscr.msk
+   
+        # Create velox raster
+        ras.vx <- velox(yrlybscr.msk)
+    
+        # Get maximum burn scar value within 150m of exposures location
+        #Mode <- function(x, na.rm = FALSE) {
+          #if(na.rm){
+            #x = x[!is.na(x)]
+          #}
+          #ux <- unique(x)
+          #return(ux[which.max(tabulate(match(x, ux)))])
+        #}
+
+        #result <- mclapply(seq_along(1), function(x){
+        #  q <- ras.vx$crop(bufferedPoints);ras.vx$extract(bufferedPoints, fun=function(t) Mode(t,na.rm=T), small = TRUE)
+        #})
+    
+        result <- mclapply(seq_along(1), function(x){
+          q <- ras.vx$crop(bufferedPoints);ras.vx$extract(bufferedPoints, fun=NULL, small = TRUE)
+        })      
+        
+        # Process results 
+        for (i in 1:nrow(bufferedPoints)) {  
+          numbers <- as.vector(unlist(result[[1]][i]))
+          numbers<-numbers[!is.na(numbers)]
+          getCount <- function(x) {
+            u <- unique(x);
+            data.frame(
+             value=u,
+              count=sapply(u, function(v) { length(which(x==v)) } )
+            )
+          }
+          countout <- getCount(numbers)
+          tmp <- as.vector(seq(1:6)) 
+          tmp[] <- 0
+          tmp[countout[,1]] <- countout[,2]
+          result[[1]][i] <- sum(c(0.05,0.15,0.75,1.0,1.0,0.0)*tmp)/sum(tmp)
+        }
+
+        result.dt <- as.data.table(Reduce(rbind, unlist(result[])))
+        result.dt[ , `:=`( idin = 1:.N )]
+        setnames(result.dt, 'V1', 'COUNT')
+    
+        # Loop through wfirepmtrs.DD perimeter polygons
+        result.dt[, pntidin := 0]
+        for (i in 1:nrow(bufferedPoints)) {
+          # Create output directory
+          pntidin.shp <- bufferedPoints@data[i,'idin']
+          result.dt[i, pntidin := pntidin.shp]  iyear <- 2017
+        }
+        result.dt[,TEST := idin - pntidin]
+        test <- result.dt[TEST != 0]
+        # Remove entries where many variables are NA  
+        drop_rows_all_na <- function(x, pct=1) x[!rowSums(is.na(x)) >= ncol(x)*pct,]
+        result.dt <- drop_rows_all_na(result.dt,0.01)
+        #polylst <- as.vector(result.dt[COUNT >= 3 & COUNT !=6][, idin])
+        if (iyear == 2017) {
+          polylst <- as.vector(result.dt[COUNT >= 0.01][, idin])          
+        } else {
+          polylst <- as.vector(result.dt[COUNT >= 0.19][, idin])          
+        }
+      }
+      
+      # Write reduced buffered file
+      bufferedPoints.out <- subset(bufferedPoints, (idin %in% polylst))
+      buffile <- paste0(final_path,'/bufferdata/','BufPts_',state,'_',iyear,'_red.shp') 
+      writeOGR(obj=bufferedPoints.out, dsn=buffile, layer='bufferedPoints.out', driver='ESRI Shapefile')
+      
+      # Update exposures totals
+      iyrdata.dt <- iyrdata.dt[polylst]
+      
+      # Remove entries where many variables are NA  
+      drop_rows_all_na <- function(x, pct=1) x[!rowSums(is.na(x)) >= ncol(x)*pct,]
+      iyrdata.dt <- drop_rows_all_na(iyrdata.dt,0.01)
+      
+      # Summarize by event parameters
+      colstosum <- str_subset(names(iyrdata.dt),'_SM')[1:4]
+      colstornk.indx <- match(colstosum, unlist(names(iyrdata.dt)))
+      colstogrp <- c('fire_id')
+      iyrdata.dt.evnt <- iyrdata.dt[, lapply(.SD, sum, na.rm=TRUE), by=colstogrp, .SDcols=colstosum, drop=FALSE] 
+      options(scipen=999)
+      print(iyrdata.dt.evnt, digits=4)
+      iyrdata.dt.evnt[]
+      
+      # Accrue output data.tableof filtered locations
+      filesappend <- list(expo.DT.fltrd, iyrdata.dt) 
+      expo.DT.fltrd <- rbindlist(filesappend, use.names=TRUE, fill=TRUE)      
+    }
+  }
+}
+
+# Write exposures data.table 
+final_path <- file.path(paste0('./',OUTPUT_DIR))
+expofile <- paste0(final_path,'/','fire_perimeter_cells_total_cleaned_filtrd.rds')
+saveRDS(expo.DT.fltrd, expofile)
+
+# Hand test polygons if necessary
+testfire <- wfirepmtrs_shp[wfirepmtrs_shp$Fire_ID == 'CA3859812261820171009',]
+bbin <- st_bbox(testfire)
+xminbb = bbin[[1]]
+xmaxbb = bbin[[3]]
+yminbb = bbin[[2]]
+ymaxbb = bbin[[4]]
+xlimin = c(xminbb, xmaxbb) 
+ylimin = c(yminbb, ymaxbb) 
+plot(testfire)
+plot(bufferedPoints, add = TRUE)
+
+
+# Re-read combined input data
+final_path <- file.path(paste0('./',DATA_DIR))
+expofile <- paste0(final_path,'/','fire_perimeter_cells_damage_20200408.rds')
+loss.DT <- readRDS(expofile) 
+setDT(loss.DT)
+
+##################################################################################################################
+## Section: Bigquery access examples
+##################################################################################################################
+
+library(tidyverse)
+library(bigrquery)
+library(DBI)
+library(sf)
+library(mapview)
+library(data.table)
+options(bigrquery.page.size = 1e7)
+bigrquery::bq_auth(email = "john.rowe@risq.io")
+conn_rnd <- DBI::dbConnect(bigrquery::bigquery(),
+                           project = "risq-rnd",
+                           dataset = "test")
+fire_perimeter_cells_total_20200408 <- tbl(conn_rnd, "fire_perimeter_cells_total_20200408") %>% 
+  dplyr::collect()
+saveRDS(fire_perimeter_cells_total_20200408, "fire_perimeter_cells_total_20200408.rds")
+fire_perimeter_cells_damage_20200408 <- tbl(conn_rnd, "fire_perimeter_cells_20200408") %>% 
+  dplyr::collect()
+saveRDS(fire_perimeter_cells_damage_20200408, "fire_perimeter_cells_damage_20200408.rds")
+fire_perimeter_cells_total_20200408 <- tbl(conn_rnd, "fire_perimeter_cells_total_20200408_unscaled") %>% 
+  dplyr::collect()
+saveRDS(fire_perimeter_cells_total_20200408, "fire_perimeter_cells_total_20200408_unscaled.rds")
+fire_perimeter_cells_damage_20200408 <- tbl(conn_rnd, "fire_perimeter_cells_20200408_unscaled") %>% 
+  dplyr::collect()
+saveRDS(fire_perimeter_cells_damage_20200408, "fire_perimeter_cells_damage_20200408_unscaled.rds")
+
+library(tidycensus)
+library(tidyverse)
+
+# Request api key http://api.census.gov/data/key_signup.html.
+#census_api_key('92e89f1664544e58c6c6c3f4d289a5e9455d4e4b', install=TRUE)
+census_api_key('92e89f1664544e58c6c6c3f4d289a5e9455d4e4b'), overwrite=TRUE)
+readRenviron("~/.Renviron")
+
+v17 <- load_variables(2017, "acs5", cache = TRUE)
+write.table(v17 , file = 'C:/GitRepositories/WFireOutcomeWork/ACSAttrbts.csv')
+
+MedHouseDolrs <- get_acs(geography = 'county', 
+                         variables = c(medianhseprce = 'B25077_001'),  
+                         year = 2018)
+write.table(MedHouseDolrs , file = 'C:/GitRepositories/WFireOutcomeWork/ACSAttrbts_HsePrice.csv')
 
 ##################################################################################################################
 ## Section: Define miscellaneous functions
